@@ -1,3 +1,6 @@
+// Algoritmos e Teoria de Grafos - Trabalho de Implementação
+// Decomposição de um grafo em seus blocos (subgrafos maximais sem vértices de corte)
+// Feito por Gabriel de Oliveira Pontarolo - GRR20203895
 #include <graphviz/cgraph.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +15,11 @@ struct vertex
     int post;
     struct vertex *father;
 
+    int lv; // variaveis para o low point
+    int low;
+    int is_articulation;
+    int son_num;
+
     char label;
     char state;
     char pad[6]; // padding para alinhar a struct na memoria
@@ -23,42 +31,43 @@ struct graph
     size_t n; // numero de vertices
     size_t m; // numero de arestas
     struct vertex **vertexes;
+    size_t comp_num;
     short *adj_mat; // matriz de adjascencia
 
     int tstmp; // timestamp para o dsf
 
     char label;
-    char pad[3]; // padding para alinhar a struct na memoria
+    // char pad[3]; // padding para alinhar a struct na memoria
 };
 
-int tstmp;
+struct block
+// subgrafo de vertices fortemente conexos
+{
+    struct vertex **vertexes;
+    size_t n;
+};
+
+// macro para calcular o menor de dois valores
+#define min(a, b) \
+    ({ __typeof__ (a) _a = (a); \
+       __typeof__ (b) _b = (b); \
+     _a < _b ? _a : _b; })
 
 struct graph *fromAgraph_t(Agraph_t *g);
 void printGraph(struct graph *g);
 void dfs(struct graph *g);
 void dfsAux(struct graph *g, struct vertex *v);
-void decompose(struct graph *g);
+void decomposeDif(struct graph *g);
 void decomposeAux(struct graph *g, struct vertex *r, int c);
+void lowPoint(struct graph *g);
+void lowPointAux(struct graph *g, struct vertex *r);
+void findArticulations(struct graph *g);
 
-void copyVertex(struct vertex *u, struct vertex *v);
+struct block *separateBlocks(struct graph *g);
+void printBlocks(struct block *bls, size_t n);
+
 int compareLabel(const void *a, const void *b);
 int comparePostOrderR(const void *a, const void *b);
-
-void copyVertex(struct vertex *u, struct vertex *v)
-// copia em u o vertice v
-{
-    u->component = v->component;
-    u->index = v->index;
-    u->label = v->label;
-    u->post = v->post;
-    u->pre = v->pre;
-    u->state = v->state;
-}
-
-int compareLabel(const void *a, const void *b)
-{
-    return (((const struct vertex *)(*((const struct vertex *const *)a)))->label - ((const struct vertex *)(*((const struct vertex *const *)b)))->label);
-}
 
 struct graph *fromAgraph_t(Agraph_t *g)
 // converte do cgraph para a struct graph
@@ -91,6 +100,7 @@ struct graph *fromAgraph_t(Agraph_t *g)
             exit(EXIT_FAILURE);
         }
         new->vertexes[i]->label = agnameof(v)[0];
+        new->vertexes[i]->is_articulation = 0;
         ++i;
     }
     qsort(new->vertexes, new->n, sizeof(struct vertex *), compareLabel);
@@ -108,30 +118,19 @@ struct graph *fromAgraph_t(Agraph_t *g)
             int r = (agnameof(v)[0] - 97);
             int c = (agnameof(u)[0] - 97);
             new->adj_mat[r * (int)new->n + c] = 1;
-            new->adj_mat[c * (int)new->n + r] = 1;
+
+            if (agisundirected(g))
+            {
+                new->adj_mat[c * (int)new->n + r] = 1;
+            }
         }
     }
 
     return new;
 }
 
-void dfsAux(struct graph *g, struct vertex *r)
-{
-    r->pre = ++(g->tstmp);
-    r->state = 1;
-    for (size_t i = 0; i < g->n; i++)
-    {
-        if ((g->adj_mat[(size_t)r->index * g->n + i] == 1) && (g->vertexes[i]->state == 0))
-        {
-            g->vertexes[i]->father = r;
-            dfsAux(g, g->vertexes[i]);
-        }
-    }
-    r->state = 2;
-    r->post = ++(g->tstmp);
-}
-
 void dfs(struct graph *g)
+// busca em profundidade
 {
     for (size_t i = 0; i < g->n; i++)
     {
@@ -149,7 +148,31 @@ void dfs(struct graph *g)
     }
 }
 
+void dfsAux(struct graph *g, struct vertex *r)
+// auxiliar da busca em profundidade
+{
+    r->pre = ++(g->tstmp);
+    r->state = 1;
+    for (size_t i = 0; i < g->n; i++)
+    {
+        if ((g->adj_mat[(size_t)r->index * g->n + i] == 1) && (g->vertexes[i]->state == 0))
+        {
+            g->vertexes[i]->father = r;
+            dfsAux(g, g->vertexes[i]);
+        }
+    }
+    r->state = 2;
+    r->post = ++(g->tstmp);
+}
+
+int compareLabel(const void *a, const void *b)
+// compara os labels do vertice em ordem lexicografica
+{
+    return (((const struct vertex *)(*((const struct vertex *const *)a)))->label - ((const struct vertex *)(*((const struct vertex *const *)b)))->label);
+}
+
 int comparePostOrderR(const void *a, const void *b)
+// compara os vertices pela pos ordem
 {
     return (((const struct vertex *)(*((const struct vertex *const *)b)))->post - ((const struct vertex *)(*((const struct vertex *const *)a)))->post);
 }
@@ -159,7 +182,8 @@ void decomposeAux(struct graph *g, struct vertex *r, int c)
     r->state = 1;
     for (size_t i = 0; i < g->n; i++)
     {
-        if ((g->adj_mat[(size_t)r->index * g->n + i] == 1) && (g->vertexes[i]->state == 0))
+        struct vertex *v = g->vertexes[i];
+        if ((g->adj_mat[(size_t)r->index * g->n + i] == 1) && (v->state == 0) && (!v->is_articulation))
         {
             decomposeAux(g, g->vertexes[i], c);
         }
@@ -168,7 +192,8 @@ void decomposeAux(struct graph *g, struct vertex *r, int c)
     r->state = 2;
 }
 
-void decompose(struct graph *g)
+void decomposeDif(struct graph *g)
+// faz a decomposicao do grafo em componentes ignorando os vertices de corte
 {
     // reverso da pos order da busca em profundidade
     struct vertex **l = malloc(sizeof(struct vertex *) * g->n);
@@ -184,10 +209,151 @@ void decompose(struct graph *g)
 
     for (size_t i = 0; i < g->n; i++)
     {
-        if (l[i]->state == 0)
+        if ((l[i]->state == 0) && (!l[i]->is_articulation))
         {
             decomposeAux(g, l[i], ++c);
         }
+    }
+
+    g->comp_num = (size_t)c;
+}
+
+void lowPoint(struct graph *g)
+// calcula o low point para cada vertice
+{
+    // inicializa
+    for (size_t i = 0; i < g->n; i++)
+    {
+        g->vertexes[i]->state = 0;
+        g->vertexes[i]->father = NULL;
+        g->vertexes[i]->son_num = 0;
+    }
+
+    // percorre os vertices
+    for (size_t i = 0; i < g->n; i++)
+    {
+        if (g->vertexes[i]->state == 0)
+        {
+            g->vertexes[i]->low = g->vertexes[i]->lv = 0;
+            lowPointAux(g, g->vertexes[i]);
+        }
+    }
+}
+
+void lowPointAux(struct graph *g, struct vertex *r)
+// funcao auxiliar para o low point
+{
+    r->state = 1;
+
+    // percorre a vizinhanca de r
+    for (size_t i = 0; i < g->n; i++)
+    {
+        if (g->adj_mat[(size_t)r->index * g->n + i] == 1)
+        {
+
+            struct vertex *w = g->vertexes[i];
+            if ((w->state == 1) && (w != r->father))
+            {
+                r->low = min(r->low, w->lv);
+            }
+            else if (w->state == 0)
+            {
+                r->son_num++;
+                w->father = r;
+                w->low = w->lv = r->lv + 1;
+                lowPointAux(g, w);
+                r->low = min(r->low, w->low);
+            }
+        }
+    }
+    r->state = 2;
+}
+
+void findArticulations(struct graph *g)
+// encontra os vertices de corte do grafo
+{
+    lowPoint(g);
+
+    for (size_t i = 0; i < g->n; i++)
+    {
+        struct vertex *u = g->vertexes[i];
+        if (u->father == NULL) // u é raiz
+        {
+            if (u->son_num >= 2)
+            {
+                u->is_articulation = 1;
+            }
+        }
+        else
+        {
+            // percorre os filhos
+            for (size_t j = 0; j < g->n; j++)
+            {
+                struct vertex *v = g->vertexes[j];
+                if ((g->adj_mat[i * g->n + j] == 1) && (u == v->father))
+                {
+                    if (u->lv <= v->low)
+                    {
+                        u->is_articulation = 1;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct block *separateBlocks(struct graph *g)
+// separa os blocos do grafo
+{
+    struct block *bls = malloc(sizeof(struct block) * g->comp_num);
+    for (size_t i = 0; i < g->comp_num; i++)
+    {
+        bls[i].vertexes = malloc(sizeof(struct vertex *) * g->n);
+        bls[i].n = 0;
+    }
+
+    for (size_t i = 0; i < g->n; i++)
+    {
+        struct vertex *u = g->vertexes[i];
+        // vertices de corte fazem parte de mais de uma componente
+        if (u->is_articulation)
+        {
+            // percorre os filhos
+            for (size_t j = 0; j < g->n; j++)
+            {
+                struct vertex *v = g->vertexes[j];
+                if ((g->adj_mat[i * g->n + j] == 1) && !v->is_articulation)
+                {
+                    size_t comp_size = bls[v->component - 1].n;
+                    if (bls[v->component - 1].vertexes[comp_size - 1] != u)
+                    {
+                        bls[v->component - 1].vertexes[comp_size] = u;
+                        bls[v->component - 1].n++;
+                    }
+                }
+            }
+        }
+        else
+        {
+            bls[u->component - 1].vertexes[bls[u->component - 1].n] = u;
+            bls[u->component - 1].n++;
+        }
+    }
+
+    return bls;
+}
+
+void printBlocks(struct block *bls, size_t n)
+{
+    for (size_t i = 0; i < n; i++)
+    {
+        qsort(bls[i].vertexes, bls[i].n, sizeof(struct vertex *), compareLabel);
+        for (size_t j = 0; j < bls[i].n; j++)
+        {
+            printf("%c ", bls[i].vertexes[j]->label);
+        }
+        printf("\n");
     }
 }
 
@@ -197,7 +363,8 @@ void printGraph(struct graph *g)
     printf("V = {");
     for (size_t i = 0; i < g->n; i++)
     {
-        printf("%c pos=%d comp=%d, ", g->vertexes[i]->label, g->vertexes[i]->post, g->vertexes[i]->component);
+        struct vertex *v = g->vertexes[i];
+        printf("%c comp=%d art=%d, ", v->label, v->component, v->is_articulation);
     }
     printf("\n\n ");
 
@@ -223,9 +390,11 @@ int main(void)
     // agwrite(ag, stdout);
 
     struct graph *g = fromAgraph_t(ag);
+    findArticulations(g);
     dfs(g);
-    decompose(g);
-    printGraph(g);
+    decomposeDif(g);
+    struct block *bls = separateBlocks(g);
+    printBlocks(bls, g->comp_num);
 
     return EXIT_SUCCESS;
 }
